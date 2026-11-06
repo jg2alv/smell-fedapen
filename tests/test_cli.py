@@ -12,6 +12,7 @@ class ConfigurationTests(unittest.TestCase):
         args = parse_args([])
 
         self.assertEqual(args.strategy, "fedprox")
+        self.assertEqual(args.dataset, "fashion-mnist")
         self.assertEqual(args.num_clients, 100)
         self.assertEqual(args.clients_per_round, 3)
         self.assertEqual(args.local_epochs, 1)
@@ -24,7 +25,7 @@ class ConfigurationTests(unittest.TestCase):
             "--clients-per-round", "2", "--num-rounds", "4",
             "--local-epochs", "5", "--batch-size", "16",
             "--learning-rate", "0.03", "--momentum", "0.5", "--seed", "19",
-            "--alpha", "0.8",
+            "--dataset", "cifar10", "--alpha", "0.8",
             "--validation-fraction", "0.25", "--fraction-evaluate", "0.5",
             "--num-workers", "2", "--no-augmentation",
         ])
@@ -33,7 +34,7 @@ class ConfigurationTests(unittest.TestCase):
             "strategy": "fedavg", "num_clients": 8, "clients_per_round": 2,
             "num_rounds": 4, "local_epochs": 5, "batch_size": 16,
             "learning_rate": 0.03, "momentum": 0.5, "seed": 19,
-            "alpha": 0.8, "validation_fraction": 0.25,
+            "dataset": "cifar10", "alpha": 0.8, "validation_fraction": 0.25,
             "fraction_evaluate": 0.5, "num_workers": 2, "augment": False,
         }
         for name, value in expected.items():
@@ -53,6 +54,7 @@ class ConfigurationTests(unittest.TestCase):
     def test_invalid_experiments_fail_with_cli_error(self):
         invalid_arguments = [
             ["--strategy", "custom"],
+            ["--dataset", "unknown"],
             ["--num-clients", "0"],
             ["--num-clients", "2", "--clients-per-round", "3"],
             ["--clients-per-round", "0"],

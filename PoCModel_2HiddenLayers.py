@@ -1,4 +1,4 @@
-"""Two-hidden-layer MLP for 28 x 28 grayscale images."""
+"""Two-hidden-layer MLP for Fashion-MNIST or CIFAR-10 images."""
 
 import torch
 from torch import nn
@@ -6,11 +6,11 @@ from torch.nn import functional as F
 
 
 class PoCModel_2HiddenLayers(nn.Module):
-    """Fashion-MNIST classifier: 784 -> 256 -> 128 -> num_classes."""
+    """Image classifier: input_size -> 256 -> 128 -> num_classes."""
 
-    def __init__(self, num_classes: int = 10) -> None:
+    def __init__(self, num_classes: int = 10, input_size: int = 784) -> None:
         super().__init__()
-        self.hidden1 = nn.Linear(784, 256)
+        self.hidden1 = nn.Linear(input_size, 256)
         self.hidden2 = nn.Linear(256, 128)
         self.output_layer = nn.Linear(128, num_classes)
 

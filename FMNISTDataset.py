@@ -1,4 +1,4 @@
-"""Native PyTorch data loaders for local Fashion-MNIST partitions."""
+"""Native PyTorch data loaders for Fashion-MNIST and CIFAR-10 partitions."""
 
 import random
 
@@ -27,6 +27,17 @@ TRAIN_TRANSFORMS = Compose(
     ]
 )
 
+CIFAR_NORMALIZATION = ((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+CIFAR_EVAL_TRANSFORMS = Compose([ToTensor(), Normalize(*CIFAR_NORMALIZATION)])
+CIFAR_TRAIN_TRANSFORMS = Compose(
+    [
+        RandomCrop(32, padding=4),
+        RandomHorizontalFlip(),
+        ToTensor(),
+        Normalize(*CIFAR_NORMALIZATION),
+    ]
+)
+
 
 def seed_worker(worker_id: int) -> None:
     """Seed libraries using the worker seed assigned by PyTorch."""
@@ -48,12 +59,14 @@ class FMNISTDataset:
         num_workers: int = 0,
         shuffle: bool = True,
         augment: bool = True,
+        dataset_name: str = "fashion-mnist",
     ) -> None:
         if not 0 < validation_fraction < 1:
             raise ValueError("validation_fraction must be between 0 and 1.")
         if len(partition) < 2:
             raise ValueError("Each client partition needs at least two examples.")
-        self._configure(batch_size, seed, num_workers, shuffle, augment)
+        self._configure(batch_size, seed, num_workers, shuffle, augment, dataset_name)
+        partition = self._prepare_partition(partition)
         splits = partition.train_test_split(
             test_size=validation_fraction, seed=seed
         )
@@ -67,19 +80,32 @@ class FMNISTDataset:
         num_workers: int,
         shuffle: bool,
         augment: bool,
+        dataset_name: str,
     ) -> None:
         if batch_size < 1:
             raise ValueError("batch_size must be positive.")
         if num_workers < 0:
             raise ValueError("num_workers must not be negative.")
+        if dataset_name not in ("fashion-mnist", "cifar10"):
+            raise ValueError("dataset_name must be 'fashion-mnist' or 'cifar10'.")
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.shuffle = shuffle
         self.seed = seed
-        self.train_transforms = TRAIN_TRANSFORMS if augment else EVAL_TRANSFORMS
-        self.eval_transforms = EVAL_TRANSFORMS
+        self.dataset_name = dataset_name
+        if dataset_name == "cifar10":
+            self.eval_transforms = CIFAR_EVAL_TRANSFORMS
+            self.train_transforms = CIFAR_TRAIN_TRANSFORMS if augment else CIFAR_EVAL_TRANSFORMS
+        else:
+            self.eval_transforms = EVAL_TRANSFORMS
+            self.train_transforms = TRAIN_TRANSFORMS if augment else EVAL_TRANSFORMS
         self._train_generator = torch.Generator().manual_seed(seed)
         self._eval_generator = torch.Generator().manual_seed(seed)
+
+    def _prepare_partition(self, partition: Dataset) -> Dataset:
+        if self.dataset_name == "cifar10" and "image" not in partition.column_names:
+            return partition.rename_column("img", "image")
+        return partition
 
     @classmethod
     def from_test_partition(
@@ -89,14 +115,15 @@ class FMNISTDataset:
         batch_size: int = 32,
         num_workers: int = 0,
         seed: int = 42,
+        dataset_name: str = "fashion-mnist",
     ) -> "FMNISTDataset":
         """Use the complete official test split for centralized evaluation."""
         if len(partition) == 0:
             raise ValueError("The test partition must not be empty.")
         instance = cls.__new__(cls)
-        instance._configure(batch_size, seed, num_workers, False, False)
+        instance._configure(batch_size, seed, num_workers, False, False, dataset_name)
         instance.train_partition = None
-        instance.test_partition = partition
+        instance.test_partition = instance._prepare_partition(partition)
         return instance
 
     def dataloader(self, validation: bool = False) -> DataLoader:

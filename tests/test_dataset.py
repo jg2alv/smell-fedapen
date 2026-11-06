@@ -1,4 +1,4 @@
-"""Offline checks for Fashion-MNIST preprocessing and the native MLP."""
+"""Offline checks for Fashion-MNIST/CIFAR-10 preprocessing and the MLP."""
 
 import unittest
 
@@ -8,6 +8,7 @@ from datasets import Dataset, Features, Image as ImageFeature, Value
 from PIL import Image
 
 from FMNISTDataset import FMNISTDataset
+from PoCExperimentFMNIST import PoCExperimentFMNIST, get_params
 from PoCModel_2HiddenLayers import PoCModel_2HiddenLayers
 
 
@@ -97,6 +98,64 @@ class DatasetTests(unittest.TestCase):
             outputs = model(torch.zeros(5, 1, 28, 28))
         self.assertEqual(tuple(outputs.shape), (5, 10))
         self.assertTrue(torch.isfinite(outputs).all())
+
+
+class CIFAR10Tests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        rng = np.random.default_rng(42)
+        cls.partition = Dataset.from_dict(
+            {
+                "img": [
+                    Image.fromarray(rng.integers(0, 256, (32, 32, 3), dtype=np.uint8))
+                    for _ in range(25)
+                ],
+                "label": [index % 10 for index in range(25)],
+            },
+            features=Features({"img": ImageFeature(), "label": Value("int64")}),
+        )
+
+    def test_cifar_preprocessing_preserves_rgb_shape_and_normalizes_channels(self):
+        for augment in (False, True):
+            with self.subTest(augment=augment):
+                dataset = FMNISTDataset(
+                    self.partition, dataset_name="cifar10", batch_size=4,
+                    shuffle=False, augment=augment,
+                )
+                batch = next(iter(dataset.dataloader()))
+                self.assertEqual(tuple(batch["image"].shape), (4, 3, 32, 32))
+                self.assertEqual(batch["label"].tolist(), dataset.train_partition["label"][:4])
+                self.assertTrue(torch.isfinite(batch["image"]).all())
+                if not augment:
+                    raw = np.array(dataset.train_partition[0]["image"])
+                    expected = torch.from_numpy(raw).permute(2, 0, 1).float() / 255.0
+                    torch.testing.assert_close(batch["image"][0], (expected - 0.5) / 0.5)
+
+    def test_cifar_central_evaluation_uses_all_images(self):
+        dataset = FMNISTDataset.from_test_partition(
+            self.partition, dataset_name="cifar10", batch_size=8,
+        )
+        batches = list(dataset.dataloader(validation=True))
+        self.assertEqual(sum(len(batch["label"]) for batch in batches), 25)
+        self.assertTrue(all(batch["image"].shape[1:] == (3, 32, 32) for batch in batches))
+        self.assertEqual(torch.cat([batch["label"] for batch in batches]).tolist(), self.partition["label"])
+
+    def test_cifar_model_trains_and_evaluates_with_fedprox(self):
+        dataset = FMNISTDataset(
+            self.partition, dataset_name="cifar10", batch_size=7, augment=False,
+        )
+        model = PoCModel_2HiddenLayers(input_size=3072)
+        client = PoCExperimentFMNIST(model, dataset, device="cpu")
+        parameters, num_examples, metrics = client.fit(
+            get_params(model), {"epochs": 1, "proximal_mu": 0.01},
+        )
+        self.assertEqual(num_examples, 20)
+        self.assertTrue(np.isfinite(metrics["loss"]))
+        self.assertEqual(parameters[0].shape, (256, 3072))
+        loss, num_examples, metrics = client.evaluate(parameters, {})
+        self.assertEqual(num_examples, 5)
+        self.assertTrue(np.isfinite(loss))
+        self.assertTrue(0 <= metrics["accuracy"] <= 1)
 
 
 if __name__ == "__main__":

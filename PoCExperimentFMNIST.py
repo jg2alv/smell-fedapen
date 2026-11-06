@@ -43,7 +43,7 @@ def _validate_optimizer(learning_rate, momentum):
 
 
 class PoCExperimentFMNIST(NumPyClient):
-    """Fashion-MNIST client supporting FedAvg and the FedProx local objective."""
+    """Image classification client supporting FedAvg and the FedProx objective."""
 
     def __init__(
         self,

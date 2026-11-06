@@ -1,4 +1,4 @@
-"""Run a local Flower/PyTorch Fashion-MNIST experiment, including on Colab."""
+"""Run local Flower/PyTorch experiments with Fashion-MNIST or CIFAR-10."""
 
 import argparse
 import math
@@ -27,7 +27,10 @@ class IgnoreWarnings(logging.Filter):
 
 logging.getLogger("flwr").addFilter(IgnoreWarnings())
 
-DATASET = "zalando-datasets/fashion_mnist"
+DATASETS = {
+    "fashion-mnist": ("zalando-datasets/fashion_mnist", 784),
+    "cifar10": ("uoft-cs/cifar10", 3072),
+}
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 GPUS_PER_CLIENT = 1.0 if torch.cuda.is_available() else 0.0
@@ -56,7 +59,7 @@ def finite_float(value):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        description="Simulação federada de Fashion-MNIST com PyTorch e Flower.",
+        description="Simulação federada de Fashion-MNIST ou CIFAR-10 com PyTorch e Flower.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     federation = parser.add_argument_group("federação")
@@ -77,6 +80,7 @@ def parse_args(argv=None):
     training.add_argument("--seed", type=nonnegative_int, default=42, help="seed dos geradores aleatórios")
     training.add_argument("--no-augmentation", dest="augment", action="store_false", help="desativa recorte e espelhamento aleatórios")
     data = parser.add_argument_group("dados")
+    data.add_argument("--dataset", choices=DATASETS, default="fashion-mnist", help="conjunto de imagens")
     data.add_argument("--alpha", type=finite_float, default=0.3, help="concentração da partição Dirichlet")
     data.add_argument("--validation-fraction", type=finite_float, default=0.2, help="fração local reservada à validação")
     data.add_argument("--num-workers", type=nonnegative_int, default=0, help="workers de cada DataLoader")
@@ -124,6 +128,7 @@ def weighted_average(results):
 
 def create_apps(args, federated_dataset=None):
     """Build native Flower apps; dataset injection also permits offline tests."""
+    dataset_path, input_size = DATASETS[args.dataset]
     seed_everything(args.seed)
     torch.set_num_threads(1)
     if federated_dataset is None:
@@ -132,7 +137,7 @@ def create_apps(args, federated_dataset=None):
             alpha=args.alpha, seed=args.seed,
         )
         federated_dataset = FederatedDataset(
-            dataset=DATASET, partitioners={"train": partitioner}, seed=args.seed,
+            dataset=dataset_path, partitioners={"train": partitioner}, seed=args.seed,
         )
     # Load once before Ray workers start, avoiding simultaneous downloads.
     test_partition = federated_dataset.load_split("test")
@@ -148,20 +153,22 @@ def create_apps(args, federated_dataset=None):
             federated_dataset.load_partition(cid), batch_size=args.batch_size,
             validation_fraction=args.validation_fraction, seed=client_seed,
             num_workers=args.num_workers, augment=args.augment,
+            dataset_name=args.dataset,
         )
         return PoCExperimentFMNIST(
-            PoCModel_2HiddenLayers(), dataset, learning_rate=args.learning_rate,
+            PoCModel_2HiddenLayers(input_size=input_size), dataset, learning_rate=args.learning_rate,
             momentum=args.momentum, epochs=args.local_epochs,
             device=DEVICE, seed=client_seed,
         ).to_client()
 
     def server_fn(context: Context):
         seed_everything(args.seed)
-        model = PoCModel_2HiddenLayers()
+        model = PoCModel_2HiddenLayers(input_size=input_size)
         initial_parameters = ndarrays_to_parameters(get_params(model))
         dataset = FMNISTDataset.from_test_partition(
             test_partition, batch_size=args.batch_size,
             num_workers=args.num_workers, seed=args.seed,
+            dataset_name=args.dataset,
         )
         evaluator = PoCExperimentFMNIST(model, dataset, device=DEVICE, seed=args.seed)
 
