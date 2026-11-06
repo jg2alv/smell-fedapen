@@ -1,234 +1,222 @@
-from flautim.pytorch.common import run_federated, weighted_average
-from flautim.pytorch import Model, Dataset
-from flautim.pytorch.federated import Experiment
-import FMNISTDataset, PoCModel_2HiddenLayers, PoCExperimentFMNIST
-from PoCExperimentFMNIST import get_params
-import flautim as fl
+"""Run a local Flower/PyTorch Fashion-MNIST experiment, including on Colab."""
+
+import argparse
+import math
+import random
+
+import numpy as np
+import torch
+from flwr.client import ClientApp
+from flwr.common import Context, ndarrays_to_parameters
+from flwr.server import ServerApp, ServerAppComponents, ServerConfig
+from flwr.server.strategy import FedAvg, FedProx
+from flwr.simulation import run_simulation
 from flwr_datasets import FederatedDataset
 from flwr_datasets.partitioner import DirichletPartitioner
-from flwr.common import Context, ndarrays_to_parameters
-import flwr
-import pandas as pd
-import numpy as np
-from flwr.server import ServerConfig, ServerAppComponents
-from datasets import load_dataset
 
-from random import random
-from flwr.server.client_manager import ClientManager
-from flwr.common import Parameters, FitIns
-from flwr.server.strategy import FedAvg
-from flwr.server.client_proxy import ClientProxy
-from time import sleep
+from FMNISTDataset import FMNISTDataset
+from PoCExperimentFMNIST import PoCExperimentFMNIST, get_params
+from PoCModel_2HiddenLayers import PoCModel_2HiddenLayers
 
-NUM_PARTITIONS = 100 # Numero de clientes totais e numero de partições de dados
-DATASET = "zalando-datasets/fashion_mnist" 
+# PARA IGNORAR OS WARNINGS DE FEATURE UPDATED E DEPRECATION DO FLWR
+import logging
 
-from torchvision.transforms import (
-    Compose,
-    Normalize,
-    RandomCrop,
-    RandomHorizontalFlip,
-    ToTensor,
-)
+class IgnoreWarnings(logging.Filter):
+    def filter(self, record):
+        return record.levelno != logging.WARNING
+
+logging.getLogger("flwr").addFilter(IgnoreWarnings())
+
+DATASET = "zalando-datasets/fashion_mnist"
+
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+GPUS_PER_CLIENT = 1.0 if torch.cuda.is_available() else 0.0
 
 
-FM_NORMALIZATION = ((0.1307,), (0.3081,))
-EVAL_TRANSFORMS = Compose([ToTensor(), Normalize(*FM_NORMALIZATION)])
-TRAIN_TRANSFORMS = Compose(
-    [
-        RandomCrop(28, padding=4),
-        RandomHorizontalFlip(),
-        ToTensor(),
-        Normalize(*FM_NORMALIZATION),
-    ]
-)
-
-# -------------------------------
-# Ref:https://discuss.flower.ai/t/custom-client-selection-strategy/63
-class MyStrategy(FedAvg):
-    """Behaves just like FedAvg but with a modified sampling.
-    """
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.p = [] # probabilities for each client based on data size?
-        self.d = 30 # number of candidate clients to consider each round
-        self.m = self.min_fit_clients # number of clients to select each round
-        # self.prev_clients = [] # store client proxies from previous round
-    
-    def configure_fit(
-        self, server_round: int, parameters: Parameters, client_manager = ClientManager # client_manager alterado!
-        ) -> list[tuple[ClientProxy, FitIns]]: 
-        """Configure the next round of training."""
-        # Get list with all the available clients (K clients)
-        available_clients = list(client_manager.clients.values())
-
-        print(f"Round {server_round} - Available clients: {[client.cid for client in available_clients]}")
-        
-        if self.p == []:
-            data_sizes = {
-                client.cid: client.fit(
-                    FitIns(parameters, {"epochs": -1}), 
-                    timeout=60, 
-                    group_id=str(client.cid)
-                ).metrics.get("data_size", 0)
-                for client in available_clients
-            }
-            
-            for key, value in data_sizes.items():
-                print(f"Cliente {key} tem {value} data_size.")
-
-            # Compute selection probabilities based on data size
-            total_size = sum(data_sizes.values())
-            self.p = [size / total_size for size in data_sizes.values()]
-
-            for i in self.p:
-                print(f"p = {i}")
-
-            p_np = np.array(self.p)
-            soma_real = p_np.sum()
-            
-            p_np /= soma_real # Normaliza a maior parte do array
-            last_index = len(p_np) - 1
-            desvio = 1.0 - p_np[:-1].sum()
-            p_np[last_index] = desvio # Força o último elemento a compensar o desvio
-            self.p = p_np.tolist()
-
-        # Sample d clients with a probability proportional to their data size
-        candidate_clients = np.random.choice(
-            available_clients,
-            size=min(self.d, len(available_clients)),
-            p=self.p,
-            replace=False
-        )
-
-        # Request the candidate clients to compute their local losses and return them to the server
-        local_losses = {
-            client.cid: client.fit(
-                FitIns(parameters, {"epochs": 0}), 
-                timeout=4,
-                group_id=str(client.cid) #? Added to fix the error
-            ).metrics.get('local_loss', float('inf'))
-            for client in candidate_clients
-        }
-
-        # Select the top m clients with the highest local losses
-        selected_clients_cids = sorted(local_losses, key=local_losses.get, reverse=True)[:self.m]
-        selected_clients = []
-        selected_clients.append([key for key in selected_clients_cids])
-
-        # Return the selected clients with the FitIns objects
-        return [(client_manager.clients.get(cid), FitIns(parameters, {})) for cid in selected_clients_cids]
-        
-
-# -------------------------------
+def positive_int(value):
+    value = int(value)
+    if value < 1:
+        raise argparse.ArgumentTypeError("deve ser um inteiro positivo")
+    return value
 
 
-def fit_config(server_round: int):
-    """Return training configuration dict for each round.
+def nonnegative_int(value):
+    value = int(value)
+    if value < 0:
+        raise argparse.ArgumentTypeError("deve ser um inteiro não negativo")
+    return value
 
-    Perform two rounds of training with one local epoch, increase to two local
-    epochs afterwards.
-    """
-    config = {
-        "server_round": server_round,  # The current round of federated learning
+
+def finite_float(value):
+    value = float(value)
+    if not math.isfinite(value):
+        raise argparse.ArgumentTypeError("deve ser um número finito")
+    return value
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Simulação federada de Fashion-MNIST com PyTorch e Flower.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    federation = parser.add_argument_group("federação")
+    federation.add_argument("--strategy", choices=("fedavg", "fedprox"), default="fedprox", help="estratégia do Flower")
+    federation.add_argument("--num-clients", type=positive_int, default=100, help="total de clientes simulados")
+    federation.add_argument("--clients-per-round", type=positive_int, default=3, help="clientes que treinam em cada rodada")
+    federation.add_argument("--num-rounds", type=positive_int, default=100, help="número de rodadas federadas")
+    federation.add_argument("--mu", type=finite_float, default=0.01, help="coeficiente proximal do FedProx")
+    federation.add_argument(
+        "--fraction-evaluate", type=finite_float, default=0.3,
+        help="fração de clientes para validação local; 0 mantém apenas o teste central",
+    )
+    training = parser.add_argument_group("treinamento")
+    training.add_argument("--local-epochs", type=positive_int, default=1, help="épocas locais por rodada")
+    training.add_argument("--batch-size", type=positive_int, default=32, help="tamanho do lote")
+    training.add_argument("--learning-rate", type=finite_float, default=0.01, help="taxa de aprendizado do SGD")
+    training.add_argument("--momentum", type=finite_float, default=0.9, help="momentum do SGD")
+    training.add_argument("--seed", type=nonnegative_int, default=42, help="seed dos geradores aleatórios")
+    training.add_argument("--no-augmentation", dest="augment", action="store_false", help="desativa recorte e espelhamento aleatórios")
+    data = parser.add_argument_group("dados")
+    data.add_argument("--alpha", type=finite_float, default=0.3, help="concentração da partição Dirichlet")
+    data.add_argument("--validation-fraction", type=finite_float, default=0.2, help="fração local reservada à validação")
+    data.add_argument("--num-workers", type=nonnegative_int, default=0, help="workers de cada DataLoader")
+    args = parser.parse_args(argv)
+
+    if args.clients_per_round > args.num_clients:
+        parser.error("--clients-per-round não pode exceder --num-clients")
+    if args.mu < 0:
+        parser.error("--mu deve ser não negativo")
+    if args.learning_rate <= 0:
+        parser.error("--learning-rate deve ser positivo")
+    if not 0 <= args.momentum < 1:
+        parser.error("--momentum deve pertencer a [0, 1)")
+    if args.alpha <= 0:
+        parser.error("--alpha deve ser positivo")
+    if not 0 < args.validation_fraction < 1:
+        parser.error("--validation-fraction deve pertencer a (0, 1)")
+    if not 0 <= args.fraction_evaluate <= 1:
+        parser.error("--fraction-evaluate deve pertencer a [0, 1]")
+    if args.seed >= 2**32:
+        parser.error("--seed deve ser menor que 2**32")
+    return args
+
+
+def seed_everything(seed):
+    random.seed(seed)
+    np.random.seed(seed % (2**32))
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def weighted_average(results):
+    """Aggregate scalar client metrics using their number of examples."""
+    total_examples = sum(num_examples for num_examples, _ in results)
+    if total_examples == 0:
+        return {}
+    keys = set.intersection(*(set(metrics) for _, metrics in results))
+    return {
+        key: sum(num_examples * float(metrics[key]) for num_examples, metrics in results)
+        / total_examples
+        for key in sorted(keys)
     }
-    return config
 
 
-
-def generate_server_fn(context, eval_fn, **kwargs):
-
-    def create_server_fn(context_flwr:  Context):
-
-        net = PoCModel_2HiddenLayers.PoCModel_2HiddenLayers(context, num_classes = 10, suffix = 0)
-        ndarrays = get_params(net)
-        global_model_init = ndarrays_to_parameters(ndarrays)
-
-        strategy = MyStrategy(
-                          evaluate_fn=eval_fn,
-                          on_fit_config_fn = fit_config,
-                          on_evaluate_config_fn = fit_config,
-                          evaluate_metrics_aggregation_fn=weighted_average,  # callback defined earlier
-                          initial_parameters=global_model_init,  # initialised global model,
-                          fraction_fit=0.03,
-                          min_fit_clients=3,
-                        )
-        num_rounds = 100
-        config = ServerConfig(num_rounds=num_rounds)
-
-        return ServerAppComponents(config=config, strategy=strategy)
-    return create_server_fn
-
-def generate_client_fn(context):
-
-    def create_client_fn(context_flwr:  Context):
-
-        global fds
-
-        cid = int(context_flwr.node_config["partition-id"])
-
-        partition = fds.load_partition(cid)
-
-        model = PoCModel_2HiddenLayers.PoCModel_2HiddenLayers(context, num_classes = 10, suffix = cid)
-
-        dataset = FMNISTDataset.FMNISTDataset(FM_NORMALIZATION, EVAL_TRANSFORMS, TRAIN_TRANSFORMS, partition, batch_size = 32, shuffle = False, num_workers = 0)
-
-        return PoCExperimentFMNIST.PoCExperimentFMNIST(model, dataset,  context).to_client()
-
-    return create_client_fn
-
-
-def evaluate_fn(context):
-    def fn(server_round, parameters, config):
-        """This function is executed by the strategy it will instantiate
-        a model and replace its parameters with those from the global model.
-        The, the model will be evaluate on the test set (recall this is the
-        whole MNIST test set)."""
-
-        global FM_NORMALIZATION, EVAL_TRANSFORMS, TRAIN_TRANSFORMS, DATASET
-        global fds
-
-        model = PoCModel_2HiddenLayers.PoCModel_2HiddenLayers(context, num_classes = 10, suffix = "FL-Global")
-        model.set_parameters(parameters)
-
-        partition = fds.load_partition(0)
-
-        dataset = FMNISTDataset.FMNISTDataset(FM_NORMALIZATION, EVAL_TRANSFORMS, TRAIN_TRANSFORMS, partition, batch_size = 32, shuffle = False, num_workers = 0)
-        dataset.test_partition = load_dataset(DATASET)["test"]
-
-        experiment = PoCExperimentFMNIST.PoCExperimentFMNIST(model, dataset, context)
-
-        config["server_round"] = server_round
-
-        loss, _, return_dic = experiment.evaluate(parameters, config)
-
-        return loss, return_dic
-
-    return fn
-
-partitioner = DirichletPartitioner(
-            num_partitions=NUM_PARTITIONS,
-            partition_by="label",
-            alpha=0.3,
-            seed=42,
+def create_apps(args, federated_dataset=None):
+    """Build native Flower apps; dataset injection also permits offline tests."""
+    seed_everything(args.seed)
+    torch.set_num_threads(1)
+    if federated_dataset is None:
+        partitioner = DirichletPartitioner(
+            num_partitions=args.num_clients, partition_by="label",
+            alpha=args.alpha, seed=args.seed,
         )
-fds = FederatedDataset(
-            dataset=DATASET,
-            partitioners={"train": partitioner},
+        federated_dataset = FederatedDataset(
+            dataset=DATASET, partitioners={"train": partitioner}, seed=args.seed,
+        )
+    # Load once before Ray workers start, avoiding simultaneous downloads.
+    test_partition = federated_dataset.load_split("test")
+    federated_dataset.load_partition(0)
+    history = []
+
+    def client_fn(context: Context):
+        cid = int(context.node_config["partition-id"])
+        client_seed = args.seed + cid
+        seed_everything(client_seed)
+        torch.set_num_threads(1)
+        dataset = FMNISTDataset(
+            federated_dataset.load_partition(cid), batch_size=args.batch_size,
+            validation_fraction=args.validation_fraction, seed=client_seed,
+            num_workers=args.num_workers, augment=args.augment,
+        )
+        return PoCExperimentFMNIST(
+            PoCModel_2HiddenLayers(), dataset, learning_rate=args.learning_rate,
+            momentum=args.momentum, epochs=args.local_epochs,
+            device=DEVICE, seed=client_seed,
+        ).to_client()
+
+    def server_fn(context: Context):
+        seed_everything(args.seed)
+        model = PoCModel_2HiddenLayers()
+        initial_parameters = ndarrays_to_parameters(get_params(model))
+        dataset = FMNISTDataset.from_test_partition(
+            test_partition, batch_size=args.batch_size,
+            num_workers=args.num_workers, seed=args.seed,
+        )
+        evaluator = PoCExperimentFMNIST(model, dataset, device=DEVICE, seed=args.seed)
+
+        def evaluate(server_round, parameters, config):
+            loss, _, metrics = evaluator.evaluate(parameters, config)
+            history.append({"round": server_round, **metrics})
+            return loss, metrics
+
+        strategy_kwargs = dict(
+            fraction_fit=args.clients_per_round / args.num_clients,
+            min_fit_clients=args.clients_per_round,
+            min_available_clients=args.num_clients,
+            fraction_evaluate=args.fraction_evaluate,
+            min_evaluate_clients=1 if args.fraction_evaluate > 0 else 0,
+            initial_parameters=initial_parameters,
+            evaluate_fn=evaluate,
+            on_fit_config_fn=lambda server_round: {
+                "server_round": server_round,
+                "epochs": args.local_epochs,
+                "learning_rate": args.learning_rate,
+                "momentum": args.momentum,
+            },
+            fit_metrics_aggregation_fn=weighted_average,
+            evaluate_metrics_aggregation_fn=weighted_average,
+            accept_failures=False,
+        )
+        if args.strategy == "fedprox":
+            strategy = FedProx(proximal_mu=args.mu, **strategy_kwargs)
+        else:
+            strategy = FedAvg(**strategy_kwargs)
+        return ServerAppComponents(
+            strategy=strategy, config=ServerConfig(num_rounds=args.num_rounds),
         )
 
-
-if __name__ == '__main__':
-
-    context = fl.init()
-
-    fl.log(f"Flautim inicializado!!!")
+    return ClientApp(client_fn=client_fn), ServerApp(server_fn=server_fn), history
 
 
-    client_fn_callback = generate_client_fn(context)
-    evaluate_fn_callback = evaluate_fn(context)
-    server_fn_callback = generate_server_fn(context, eval_fn = evaluate_fn_callback)
+def main(argv=None):
+    args = parse_args(argv)
+    client_app, server_app, history = create_apps(args)
+    run_simulation(
+        server_app=server_app, client_app=client_app,
+        num_supernodes=args.num_clients,
+        backend_config={
+            "client_resources": {
+                "num_cpus": 1,
+                "num_gpus": GPUS_PER_CLIENT,
+            },
+            "init_args": {"include_dashboard": False},
+        },
+    )
+    if len(history) != args.num_rounds + 1:
+        raise RuntimeError("A simulação terminou sem avaliar todas as rodadas.")
+    return history
 
-    fl.log(f"Experimento criado!!!")
 
-    run_federated(client_fn_callback, server_fn_callback, num_clients = NUM_PARTITIONS)
+if __name__ == "__main__":
+    main()
