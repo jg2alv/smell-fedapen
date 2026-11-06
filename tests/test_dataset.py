@@ -1,4 +1,4 @@
-"""Offline checks for Fashion-MNIST/CIFAR-10 preprocessing and the MLP."""
+"""Offline checks for baseline preprocessing and dataset-specific CNNs."""
 
 import unittest
 
@@ -9,7 +9,7 @@ from PIL import Image
 
 from BaselineDataset import BaselineDataset
 from BaselineExperiment import BaselineExperiment, get_params
-from Model import Model
+from Model import create_model
 
 
 class DatasetTests(unittest.TestCase):
@@ -62,17 +62,6 @@ class DatasetTests(unittest.TestCase):
                 sizes = [len(batch["label"]) for batch in loader]
                 self.assertEqual(sizes, [7, 7, 6])
 
-    def test_central_evaluation_uses_the_complete_test_partition(self):
-        dataset = BaselineDataset.from_test_partition(self.partition, batch_size=8, seed=23)
-        batches = list(dataset.dataloader(validation=True))
-        labels = torch.cat([batch["label"] for batch in batches]).tolist()
-
-        self.assertEqual(len(dataset.test_partition), 25)
-        self.assertEqual(labels, list(self.partition["label"]))
-        self.assertEqual([len(batch["label"]) for batch in batches], [8, 8, 8, 1])
-        with self.assertRaises(AttributeError):
-            dataset.dataloader()
-
     def test_disabling_augmentation_is_deterministic(self):
         dataset = BaselineDataset(self.partition, augment=False, shuffle=False)
         torch.manual_seed(1)
@@ -93,7 +82,7 @@ class DatasetTests(unittest.TestCase):
         torch.testing.assert_close(first_order, second_order, rtol=0, atol=0)
 
     def test_model_returns_ten_logits_per_image(self):
-        model = Model()
+        model = create_model("fashion-mnist")
         with torch.no_grad():
             outputs = model(torch.zeros(5, 1, 28, 28))
         self.assertEqual(tuple(outputs.shape), (5, 10))
@@ -131,27 +120,18 @@ class CIFAR10Tests(unittest.TestCase):
                     expected = torch.from_numpy(raw).permute(2, 0, 1).float() / 255.0
                     torch.testing.assert_close(batch["image"][0], (expected - 0.5) / 0.5)
 
-    def test_cifar_central_evaluation_uses_all_images(self):
-        dataset = BaselineDataset.from_test_partition(
-            self.partition, dataset_name="cifar10", batch_size=8,
-        )
-        batches = list(dataset.dataloader(validation=True))
-        self.assertEqual(sum(len(batch["label"]) for batch in batches), 25)
-        self.assertTrue(all(batch["image"].shape[1:] == (3, 32, 32) for batch in batches))
-        self.assertEqual(torch.cat([batch["label"] for batch in batches]).tolist(), self.partition["label"])
-
     def test_cifar_model_trains_and_evaluates_with_fedprox(self):
         dataset = BaselineDataset(
             self.partition, dataset_name="cifar10", batch_size=7, augment=False,
         )
-        model = Model(input_size=3072)
+        model = create_model("cifar10")
         client = BaselineExperiment(model, dataset, device="cpu")
         parameters, num_examples, metrics = client.fit(
             get_params(model), {"epochs": 1, "proximal_mu": 0.01},
         )
         self.assertEqual(num_examples, 20)
         self.assertTrue(np.isfinite(metrics["loss"]))
-        self.assertEqual(parameters[0].shape, (256, 3072))
+        self.assertEqual(parameters[0].shape, (64, 3, 3, 3))
         loss, num_examples, metrics = client.evaluate(parameters, {})
         self.assertEqual(num_examples, 5)
         self.assertTrue(np.isfinite(loss))

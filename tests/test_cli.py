@@ -13,11 +13,43 @@ class ConfigurationTests(unittest.TestCase):
 
         self.assertEqual(args.strategy, "fedprox")
         self.assertEqual(args.dataset, "fashion-mnist")
-        self.assertEqual(args.num_clients, 100)
-        self.assertEqual(args.clients_per_round, 3)
-        self.assertEqual(args.local_epochs, 1)
-        self.assertEqual(args.mu, 0.01)
+        self.assertEqual(args.num_clients, 10)
+        self.assertEqual(args.clients_per_round, 10)
+        self.assertEqual(args.local_epochs, 5)
+        self.assertEqual(args.batch_size, 64)
+        self.assertEqual(args.mu, 0.001)
+        self.assertEqual(args.momentum, 0.0)
+        self.assertEqual(args.lr_decay, 0.99)
+        self.assertEqual(args.validation_fraction, 1 / 6)
+        self.assertEqual(args.fraction_evaluate, 1.0)
         self.assertTrue(args.augment)
+
+    def test_defaults_do_not_change_with_strategy(self):
+        defaults = vars(parse_args([])).copy()
+        defaults.pop("strategy")
+        for strategy in ("fedavg", "fedprox", "fedapen"):
+            arguments = vars(parse_args(["--strategy", strategy])).copy()
+            arguments.pop("strategy")
+            self.assertEqual(arguments, defaults)
+
+    def test_fedapen_respects_explicit_hyperparameters(self):
+        args = parse_args([
+            "--strategy", "fedapen", "--num-clients", "8", "--clients-per-round", "3",
+            "--fraction-evaluate", "0.5", "--momentum", "0.2", "--optimizer", "sgd",
+            "--init", "xavier", "--lr-decay", "0.8", "--adaptability-fraction", "0.1",
+            "--adaptability-epochs", "4", "--adaptability-learning-rate", "0.02",
+            "--lambda-init", "0.3",
+        ])
+        self.assertEqual(args.clients_per_round, 3)
+        self.assertEqual(args.fraction_evaluate, 0.5)
+        self.assertEqual(args.momentum, 0.2)
+        self.assertEqual(args.optimizer, "sgd")
+        self.assertEqual(args.init, "xavier")
+        self.assertEqual(args.lr_decay, 0.8)
+        self.assertEqual(args.adaptability_fraction, 0.1)
+        self.assertEqual(args.adaptability_epochs, 4)
+        self.assertEqual(args.adaptability_learning_rate, 0.02)
+        self.assertEqual(args.lambda_init, 0.3)
 
     def test_explicit_fedavg_experiment_preserves_requested_settings(self):
         args = parse_args([
