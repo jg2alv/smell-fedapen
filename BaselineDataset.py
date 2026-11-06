@@ -96,23 +96,6 @@ class BaselineDataset:
             return partition.rename_column("img", "image")
         return partition
 
-    @classmethod
-    def from_test_partition(
-        cls,
-        partition: Dataset,
-        *,
-        batch_size: int = 32,
-        num_workers: int = 0,
-        seed: int = 42,
-        dataset_name: str = "fashion-mnist",
-    ) -> "BaselineDataset":
-        """Use the complete official test split for centralized evaluation."""
-        instance = cls.__new__(cls)
-        instance._configure(batch_size, seed, num_workers, False, False, dataset_name)
-        instance.train_partition = None
-        instance.test_partition = instance._prepare_partition(partition)
-        return instance
-
     def dataloader(self, validation: bool = False) -> DataLoader:
         partition = self.validation() if validation else self.train()
         return DataLoader(

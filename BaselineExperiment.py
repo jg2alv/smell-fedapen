@@ -33,6 +33,7 @@ class BaselineExperiment(NumPyClient):
         *,
         learning_rate=0.01,
         momentum=0.9,
+        optimizer="sgd",
         epochs=1,
         device="cpu",
         seed=42,
@@ -44,11 +45,19 @@ class BaselineExperiment(NumPyClient):
         self.dataset = dataset
         self.learning_rate = learning_rate
         self.momentum = momentum
+        self.optimizer_name = optimizer
         self.seed = int(seed)
         self.criterion = torch.nn.CrossEntropyLoss()
-        self.optimizer = torch.optim.SGD(
-            self.model.parameters(), lr=self.learning_rate, momentum=self.momentum
-        )
+        self.optimizer = self.create_optimizer(self.learning_rate, self.momentum)
+
+    def create_optimizer(self, learning_rate, momentum):
+        if self.optimizer_name == "sgd":
+            return torch.optim.SGD(self.model.parameters(), lr=learning_rate, momentum=momentum)
+        if self.optimizer_name == "adam":
+            if momentum != 0:
+                raise ValueError("momentum is only supported by SGD; use --momentum 0 with Adam.")
+            return torch.optim.Adam(self.model.parameters(), lr=learning_rate)
+        raise ValueError(f"Unknown optimizer: {self.optimizer_name}")
 
     def get_parameters(self, config):
         return get_params(self.model)
@@ -71,9 +80,7 @@ class BaselineExperiment(NumPyClient):
         # These detached weights stay fixed throughout every local epoch.
         global_parameters = tuple(weight.detach().clone() for weight in self.model.parameters())
         # Clients can be recreated between rounds; momentum always starts fresh.
-        self.optimizer = torch.optim.SGD(
-            self.model.parameters(), lr=learning_rate, momentum=momentum
-        )
+        self.optimizer = self.create_optimizer(learning_rate, momentum)
         _, metrics = self.training_loop(
             self.dataset.dataloader(),
             epochs=epochs,
