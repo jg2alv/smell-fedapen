@@ -23,7 +23,7 @@ def get_params(model):
     return [value.detach().cpu().numpy().copy() for value in model.state_dict().values()]
 
 
-class PoCExperimentFMNIST(NumPyClient):
+class BaselineExperiment(NumPyClient):
     """Image classification client supporting FedAvg and the FedProx objective."""
 
     def __init__(

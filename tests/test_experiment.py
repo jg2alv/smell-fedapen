@@ -8,7 +8,7 @@ from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, Dataset
 
-from PoCExperimentFMNIST import PoCExperimentFMNIST, get_params, set_params
+from BaselineExperiment import BaselineExperiment, get_params, set_params
 
 
 class DictDataset(Dataset):
@@ -56,7 +56,7 @@ class ExperimentTests(unittest.TestCase):
     def make_client(self, model=None, batch_size=2):
         if model is None:
             model = RecordingLinear()
-        return PoCExperimentFMNIST(
+        return BaselineExperiment(
             model,
             LocalDataset(self.images, self.labels, batch_size),
             learning_rate=0.1,
@@ -98,7 +98,7 @@ class ExperimentTests(unittest.TestCase):
                 with torch.no_grad():
                     model.weight.copy_(torch.eye(2))
                 dataset = LocalDataset(images, labels, batch_size)
-                client = PoCExperimentFMNIST(model, dataset, device="cpu")
+                client = BaselineExperiment(model, dataset, device="cpu")
 
                 loss, num_examples, metrics = client.evaluate(get_params(model), {})
 
@@ -116,7 +116,7 @@ class ExperimentTests(unittest.TestCase):
         for proximal_mu in (0.0, mu):
             model = nn.Linear(1, 2, bias=False)
             nn.init.zeros_(model.weight)
-            client = PoCExperimentFMNIST(
+            client = BaselineExperiment(
                 model,
                 LocalDataset(images, labels, batch_size=1),
                 learning_rate=learning_rate,

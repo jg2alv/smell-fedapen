@@ -7,9 +7,9 @@ import torch
 from datasets import Dataset, Features, Image as ImageFeature, Value
 from PIL import Image
 
-from FMNISTDataset import FMNISTDataset
-from PoCExperimentFMNIST import PoCExperimentFMNIST, get_params
-from PoCModel_2HiddenLayers import PoCModel_2HiddenLayers
+from BaselineDataset import BaselineDataset
+from BaselineExperiment import BaselineExperiment, get_params
+from Model import Model
 
 
 class DatasetTests(unittest.TestCase):
@@ -28,8 +28,8 @@ class DatasetTests(unittest.TestCase):
         )
 
     def test_split_is_reproducible_disjoint_and_complete(self):
-        first = FMNISTDataset(self.partition, seed=17, validation_fraction=0.2)
-        second = FMNISTDataset(self.partition, seed=17, validation_fraction=0.2)
+        first = BaselineDataset(self.partition, seed=17, validation_fraction=0.2)
+        second = BaselineDataset(self.partition, seed=17, validation_fraction=0.2)
         train_ids = list(first.train_partition["sample_id"])
         validation_ids = list(first.test_partition["sample_id"])
 
@@ -41,7 +41,7 @@ class DatasetTests(unittest.TestCase):
         self.assertEqual(set(train_ids) | set(validation_ids), set(range(25)))
 
     def test_batches_preserve_labels_and_image_dimensions(self):
-        dataset = FMNISTDataset(self.partition, batch_size=4, shuffle=False, augment=False)
+        dataset = BaselineDataset(self.partition, batch_size=4, shuffle=False, augment=False)
         batch = next(iter(dataset.dataloader()))
 
         self.assertEqual(tuple(batch["image"].shape), (4, 1, 28, 28))
@@ -53,7 +53,7 @@ class DatasetTests(unittest.TestCase):
     def test_batch_size_and_worker_configuration_are_respected(self):
         for workers in (0, 1):
             with self.subTest(num_workers=workers):
-                dataset = FMNISTDataset(
+                dataset = BaselineDataset(
                     self.partition, batch_size=7, num_workers=workers, shuffle=False, augment=False
                 )
                 loader = dataset.dataloader()
@@ -63,7 +63,7 @@ class DatasetTests(unittest.TestCase):
                 self.assertEqual(sizes, [7, 7, 6])
 
     def test_central_evaluation_uses_the_complete_test_partition(self):
-        dataset = FMNISTDataset.from_test_partition(self.partition, batch_size=8, seed=23)
+        dataset = BaselineDataset.from_test_partition(self.partition, batch_size=8, seed=23)
         batches = list(dataset.dataloader(validation=True))
         labels = torch.cat([batch["label"] for batch in batches]).tolist()
 
@@ -74,7 +74,7 @@ class DatasetTests(unittest.TestCase):
             dataset.dataloader()
 
     def test_disabling_augmentation_is_deterministic(self):
-        dataset = FMNISTDataset(self.partition, augment=False, shuffle=False)
+        dataset = BaselineDataset(self.partition, augment=False, shuffle=False)
         torch.manual_seed(1)
         first = dataset.train()[0]["image"]
         torch.manual_seed(999)
@@ -86,14 +86,14 @@ class DatasetTests(unittest.TestCase):
         torch.testing.assert_close(first, expected)
 
     def test_seed_reproduces_training_shuffle(self):
-        first = FMNISTDataset(self.partition, seed=71, batch_size=6, augment=False)
-        second = FMNISTDataset(self.partition, seed=71, batch_size=6, augment=False)
+        first = BaselineDataset(self.partition, seed=71, batch_size=6, augment=False)
+        second = BaselineDataset(self.partition, seed=71, batch_size=6, augment=False)
         first_order = torch.cat([batch["sample_id"] for batch in first.dataloader()])
         second_order = torch.cat([batch["sample_id"] for batch in second.dataloader()])
         torch.testing.assert_close(first_order, second_order, rtol=0, atol=0)
 
     def test_model_returns_ten_logits_per_image(self):
-        model = PoCModel_2HiddenLayers()
+        model = Model()
         with torch.no_grad():
             outputs = model(torch.zeros(5, 1, 28, 28))
         self.assertEqual(tuple(outputs.shape), (5, 10))
@@ -118,7 +118,7 @@ class CIFAR10Tests(unittest.TestCase):
     def test_cifar_preprocessing_preserves_rgb_shape_and_normalizes_channels(self):
         for augment in (False, True):
             with self.subTest(augment=augment):
-                dataset = FMNISTDataset(
+                dataset = BaselineDataset(
                     self.partition, dataset_name="cifar10", batch_size=4,
                     shuffle=False, augment=augment,
                 )
@@ -132,7 +132,7 @@ class CIFAR10Tests(unittest.TestCase):
                     torch.testing.assert_close(batch["image"][0], (expected - 0.5) / 0.5)
 
     def test_cifar_central_evaluation_uses_all_images(self):
-        dataset = FMNISTDataset.from_test_partition(
+        dataset = BaselineDataset.from_test_partition(
             self.partition, dataset_name="cifar10", batch_size=8,
         )
         batches = list(dataset.dataloader(validation=True))
@@ -141,11 +141,11 @@ class CIFAR10Tests(unittest.TestCase):
         self.assertEqual(torch.cat([batch["label"] for batch in batches]).tolist(), self.partition["label"])
 
     def test_cifar_model_trains_and_evaluates_with_fedprox(self):
-        dataset = FMNISTDataset(
+        dataset = BaselineDataset(
             self.partition, dataset_name="cifar10", batch_size=7, augment=False,
         )
-        model = PoCModel_2HiddenLayers(input_size=3072)
-        client = PoCExperimentFMNIST(model, dataset, device="cpu")
+        model = Model(input_size=3072)
+        client = BaselineExperiment(model, dataset, device="cpu")
         parameters, num_examples, metrics = client.fit(
             get_params(model), {"epochs": 1, "proximal_mu": 0.01},
         )

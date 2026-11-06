@@ -5,7 +5,7 @@ from torch import nn
 from torch.nn import functional as F
 
 
-class PoCModel_2HiddenLayers(nn.Module):
+class Model(nn.Module):
     """Image classifier: input_size -> 256 -> 128 -> num_classes."""
 
     def __init__(self, num_classes: int = 10, input_size: int = 784) -> None:

@@ -13,9 +13,9 @@ from flwr.simulation import run_simulation
 from flwr_datasets import FederatedDataset
 from flwr_datasets.partitioner import DirichletPartitioner
 
-from FMNISTDataset import FMNISTDataset
-from PoCExperimentFMNIST import PoCExperimentFMNIST, get_params
-from PoCModel_2HiddenLayers import PoCModel_2HiddenLayers
+from BaselineDataset import BaselineDataset
+from BaselineExperiment import BaselineExperiment, get_params
+from Model import Model
 
 # PARA IGNORAR OS WARNINGS DE FEATURE UPDATED E DEPRECATION DO FLWR
 import logging
@@ -101,28 +101,28 @@ def create_apps(args, federated_dataset=None):
         client_seed = args.seed + cid
         seed_everything(client_seed)
         torch.set_num_threads(1)
-        dataset = FMNISTDataset(
+        dataset = BaselineDataset(
             federated_dataset.load_partition(cid), batch_size=args.batch_size,
             validation_fraction=args.validation_fraction, seed=client_seed,
             num_workers=args.num_workers, augment=args.augment,
             dataset_name=args.dataset,
         )
-        return PoCExperimentFMNIST(
-            PoCModel_2HiddenLayers(input_size=input_size), dataset, learning_rate=args.learning_rate,
+        return BaselineExperiment(
+            Model(input_size=input_size), dataset, learning_rate=args.learning_rate,
             momentum=args.momentum, epochs=args.local_epochs,
             device=DEVICE, seed=client_seed,
         ).to_client()
 
     def server_fn(context: Context):
         seed_everything(args.seed)
-        model = PoCModel_2HiddenLayers(input_size=input_size)
+        model = Model(input_size=input_size)
         initial_parameters = ndarrays_to_parameters(get_params(model))
-        dataset = FMNISTDataset.from_test_partition(
+        dataset = BaselineDataset.from_test_partition(
             test_partition, batch_size=args.batch_size,
             num_workers=args.num_workers, seed=args.seed,
             dataset_name=args.dataset,
         )
-        evaluator = PoCExperimentFMNIST(model, dataset, device=DEVICE, seed=args.seed)
+        evaluator = BaselineExperiment(model, dataset, device=DEVICE, seed=args.seed)
 
         def evaluate(server_round, parameters, config):
             loss, _, metrics = evaluator.evaluate(parameters, config)

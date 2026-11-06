@@ -46,7 +46,7 @@ def seed_worker(worker_id: int) -> None:
     np.random.seed(worker_seed)
 
 
-class FMNISTDataset:
+class BaselineDataset:
     """Prepare one client's train/validation split without a platform API."""
 
     def __init__(
@@ -105,7 +105,7 @@ class FMNISTDataset:
         num_workers: int = 0,
         seed: int = 42,
         dataset_name: str = "fashion-mnist",
-    ) -> "FMNISTDataset":
+    ) -> "BaselineDataset":
         """Use the complete official test split for centralized evaluation."""
         instance = cls.__new__(cls)
         instance._configure(batch_size, seed, num_workers, False, False, dataset_name)
