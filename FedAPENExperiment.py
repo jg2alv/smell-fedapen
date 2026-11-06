@@ -184,4 +184,5 @@ class FedAPENExperiment(NumPyClient):
         return loss, num_examples, {
             "loss": loss, "accuracy": accuracy,
             "f1": float(f1_score(all_labels, predictions, average="macro", zero_division=0)),
+            "lambda": self.lambda_i.item(),
         }
