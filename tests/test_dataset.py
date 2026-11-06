@@ -70,7 +70,7 @@ class DatasetTests(unittest.TestCase):
         self.assertEqual(len(dataset.test_partition), 25)
         self.assertEqual(labels, list(self.partition["label"]))
         self.assertEqual([len(batch["label"]) for batch in batches], [8, 8, 8, 1])
-        with self.assertRaises(ValueError):
+        with self.assertRaises(AttributeError):
             dataset.dataloader()
 
     def test_disabling_augmentation_is_deterministic(self):

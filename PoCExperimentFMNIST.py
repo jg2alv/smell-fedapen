@@ -1,7 +1,6 @@
 """Native PyTorch training and evaluation exposed as a Flower NumPyClient."""
 
 from collections import OrderedDict
-import math
 import random
 
 import numpy as np
@@ -11,35 +10,17 @@ from sklearn.metrics import f1_score
 
 
 def set_params(model, parameters):
-    """Load Flower arrays, validating the entire state before updating it."""
-    state = model.state_dict()
-    if len(parameters) != len(state):
-        raise ValueError("The number of parameter arrays does not match the model.")
-    updated = OrderedDict()
-    for (name, current), array in zip(state.items(), parameters):
-        value = torch.as_tensor(array, dtype=current.dtype)
-        if value.shape != current.shape:
-            raise ValueError(f"Invalid shape for parameter {name}: {value.shape}.")
-        updated[name] = value
+    """Load Flower arrays using native zip and PyTorch state checks."""
+    updated = OrderedDict(
+        (name, torch.as_tensor(array, dtype=current.dtype))
+        for (name, current), array in zip(model.state_dict().items(), parameters, strict=True)
+    )
     model.load_state_dict(updated, strict=True)
 
 
 def get_params(model):
     """Return independent CPU arrays suitable for transport by Flower."""
     return [value.detach().cpu().numpy().copy() for value in model.state_dict().values()]
-
-
-def _positive_epochs(epochs):
-    if isinstance(epochs, bool) or not isinstance(epochs, (int, np.integer)) or epochs < 1:
-        raise ValueError("epochs must be a positive integer.")
-    return int(epochs)
-
-
-def _validate_optimizer(learning_rate, momentum):
-    if not math.isfinite(learning_rate) or learning_rate <= 0:
-        raise ValueError("learning_rate must be finite and greater than zero.")
-    if not math.isfinite(momentum) or not 0 <= momentum < 1:
-        raise ValueError("momentum must be finite and in [0, 1).")
 
 
 class PoCExperimentFMNIST(NumPyClient):
@@ -57,13 +38,12 @@ class PoCExperimentFMNIST(NumPyClient):
         seed=42,
     ):
         super().__init__()
-        _validate_optimizer(learning_rate, momentum)
-        self.epochs = _positive_epochs(epochs)
+        self.epochs = epochs
         self.device = torch.device(device)
         self.model = model.to(self.device)
         self.dataset = dataset
-        self.learning_rate = float(learning_rate)
-        self.momentum = float(momentum)
+        self.learning_rate = learning_rate
+        self.momentum = momentum
         self.seed = int(seed)
         self.criterion = torch.nn.CrossEntropyLoss()
         self.optimizer = torch.optim.SGD(
@@ -75,17 +55,14 @@ class PoCExperimentFMNIST(NumPyClient):
 
     def fit(self, parameters, config):
         """Train from this round's global weights; Flower FedProx supplies mu."""
-        epochs = _positive_epochs(config.get("epochs", self.epochs))
-        learning_rate = float(config.get("learning_rate", self.learning_rate))
-        momentum = float(config.get("momentum", self.momentum))
-        proximal_mu = float(config.get("proximal_mu", 0.0))
-        _validate_optimizer(learning_rate, momentum)
-        if not math.isfinite(proximal_mu) or proximal_mu < 0:
-            raise ValueError("proximal_mu must be finite and nonnegative.")
+        epochs = config.get("epochs", self.epochs)
+        learning_rate = config.get("learning_rate", self.learning_rate)
+        momentum = config.get("momentum", self.momentum)
+        proximal_mu = config.get("proximal_mu", 0.0)
 
         round_seed = int(config.get("seed", self.seed)) + int(config.get("server_round", 0))
         random.seed(round_seed)
-        np.random.seed(round_seed % (2**32))
+        np.random.seed(round_seed)
         torch.manual_seed(round_seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(round_seed)
@@ -107,15 +84,9 @@ class PoCExperimentFMNIST(NumPyClient):
 
     def training_loop(self, data_loader, *, epochs=None, proximal_mu=0.0, global_parameters=None):
         """Minimize CE + mu/2 * ||w-w_global||² over all requested epochs."""
-        epochs = _positive_epochs(self.epochs if epochs is None else epochs)
-        if not math.isfinite(proximal_mu) or proximal_mu < 0:
-            raise ValueError("proximal_mu must be finite and nonnegative.")
-        if proximal_mu > 0:
-            if global_parameters is None:
-                raise ValueError("FedProx requires a fixed snapshot of the global parameters.")
+        epochs = self.epochs if epochs is None else epochs
+        if proximal_mu != 0:
             global_parameters = tuple(weight.detach().to(self.device) for weight in global_parameters)
-            if len(global_parameters) != len(tuple(self.model.parameters())):
-                raise ValueError("The FedProx snapshot does not match the model.")
 
         self.model.train()
         total_loss, correct, num_examples = 0.0, 0, 0
@@ -126,10 +97,10 @@ class PoCExperimentFMNIST(NumPyClient):
                 self.optimizer.zero_grad(set_to_none=True)
                 outputs = self.model(images)
                 loss = self.criterion(outputs, labels)
-                if proximal_mu > 0:
+                if proximal_mu != 0:
                     proximal_term = sum(
                         (local - global_weight).square().sum()
-                        for local, global_weight in zip(self.model.parameters(), global_parameters)
+                        for local, global_weight in zip(self.model.parameters(), global_parameters, strict=True)
                     )
                     loss = loss + (proximal_mu / 2.0) * proximal_term
                 loss.backward()
@@ -140,8 +111,6 @@ class PoCExperimentFMNIST(NumPyClient):
                 correct += (outputs.argmax(dim=1) == labels).sum().item()
                 num_examples += batch_size
 
-        if num_examples == 0:
-            raise ValueError("The training data loader is empty.")
         loss = total_loss / num_examples
         return float(loss), {"loss": float(loss), "accuracy": correct / num_examples}
 
@@ -168,11 +137,9 @@ class PoCExperimentFMNIST(NumPyClient):
                 predictions.extend(predicted.cpu().tolist())
                 labels_all.extend(labels.cpu().tolist())
 
-        if num_examples == 0:
-            raise ValueError("The validation data loader is empty.")
         loss = total_loss / num_examples
         return float(loss), {
             "loss": float(loss),
             "accuracy": correct / num_examples,
-            "f1": float(f1_score(labels_all, predictions, average="macro", zero_division=0)),
+            "f1": float(f1_score(labels_all, predictions, average="macro")),
         }

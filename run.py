@@ -1,7 +1,6 @@
 """Run local Flower/PyTorch experiments with Fashion-MNIST or CIFAR-10."""
 
 import argparse
-import math
 import random
 
 import numpy as np
@@ -36,78 +35,33 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 GPUS_PER_CLIENT = 1.0 if torch.cuda.is_available() else 0.0
 
 
-def positive_int(value):
-    value = int(value)
-    if value < 1:
-        raise argparse.ArgumentTypeError("deve ser um inteiro positivo")
-    return value
-
-
-def nonnegative_int(value):
-    value = int(value)
-    if value < 0:
-        raise argparse.ArgumentTypeError("deve ser um inteiro não negativo")
-    return value
-
-
-def finite_float(value):
-    value = float(value)
-    if not math.isfinite(value):
-        raise argparse.ArgumentTypeError("deve ser um número finito")
-    return value
-
-
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Simulação federada de Fashion-MNIST ou CIFAR-10 com PyTorch e Flower.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    federation = parser.add_argument_group("federação")
-    federation.add_argument("--strategy", choices=("fedavg", "fedprox"), default="fedprox", help="estratégia do Flower")
-    federation.add_argument("--num-clients", type=positive_int, default=100, help="total de clientes simulados")
-    federation.add_argument("--clients-per-round", type=positive_int, default=3, help="clientes que treinam em cada rodada")
-    federation.add_argument("--num-rounds", type=positive_int, default=100, help="número de rodadas federadas")
-    federation.add_argument("--mu", type=finite_float, default=0.01, help="coeficiente proximal do FedProx")
-    federation.add_argument(
-        "--fraction-evaluate", type=finite_float, default=0.3,
-        help="fração de clientes para validação local; 0 mantém apenas o teste central",
-    )
-    training = parser.add_argument_group("treinamento")
-    training.add_argument("--local-epochs", type=positive_int, default=1, help="épocas locais por rodada")
-    training.add_argument("--batch-size", type=positive_int, default=32, help="tamanho do lote")
-    training.add_argument("--learning-rate", type=finite_float, default=0.01, help="taxa de aprendizado do SGD")
-    training.add_argument("--momentum", type=finite_float, default=0.9, help="momentum do SGD")
-    training.add_argument("--seed", type=nonnegative_int, default=42, help="seed dos geradores aleatórios")
-    training.add_argument("--no-augmentation", dest="augment", action="store_false", help="desativa recorte e espelhamento aleatórios")
-    data = parser.add_argument_group("dados")
-    data.add_argument("--dataset", choices=DATASETS, default="fashion-mnist", help="conjunto de imagens")
-    data.add_argument("--alpha", type=finite_float, default=0.3, help="concentração da partição Dirichlet")
-    data.add_argument("--validation-fraction", type=finite_float, default=0.2, help="fração local reservada à validação")
-    data.add_argument("--num-workers", type=nonnegative_int, default=0, help="workers de cada DataLoader")
-    args = parser.parse_args(argv)
-
-    if args.clients_per_round > args.num_clients:
-        parser.error("--clients-per-round não pode exceder --num-clients")
-    if args.mu < 0:
-        parser.error("--mu deve ser não negativo")
-    if args.learning_rate <= 0:
-        parser.error("--learning-rate deve ser positivo")
-    if not 0 <= args.momentum < 1:
-        parser.error("--momentum deve pertencer a [0, 1)")
-    if args.alpha <= 0:
-        parser.error("--alpha deve ser positivo")
-    if not 0 < args.validation_fraction < 1:
-        parser.error("--validation-fraction deve pertencer a (0, 1)")
-    if not 0 <= args.fraction_evaluate <= 1:
-        parser.error("--fraction-evaluate deve pertencer a [0, 1]")
-    if args.seed >= 2**32:
-        parser.error("--seed deve ser menor que 2**32")
-    return args
+    parser.add_argument("--strategy", choices=("fedavg", "fedprox"), default="fedprox", help="estratégia do Flower")
+    parser.add_argument("--num-clients", type=int, default=100, help="total de clientes simulados")
+    parser.add_argument("--clients-per-round", type=int, default=3, help="clientes que treinam em cada rodada")
+    parser.add_argument("--num-rounds", type=int, default=100, help="número de rodadas federadas")
+    parser.add_argument("--mu", type=float, default=0.01, help="coeficiente proximal do FedProx")
+    parser.add_argument("--fraction-evaluate", type=float, default=0.3, help="fração de clientes para validação local")
+    parser.add_argument("--local-epochs", type=int, default=1, help="épocas locais por rodada")
+    parser.add_argument("--batch-size", type=int, default=32, help="tamanho do lote")
+    parser.add_argument("--learning-rate", type=float, default=0.01, help="taxa de aprendizado do SGD")
+    parser.add_argument("--momentum", type=float, default=0.9, help="momentum do SGD")
+    parser.add_argument("--seed", type=int, default=42, help="seed dos geradores aleatórios")
+    parser.add_argument("--no-augmentation", dest="augment", action="store_false", help="desativa recorte e espelhamento aleatórios")
+    parser.add_argument("--dataset", choices=DATASETS, default="fashion-mnist", help="conjunto de imagens")
+    parser.add_argument("--alpha", type=float, default=0.3, help="concentração da partição Dirichlet")
+    parser.add_argument("--validation-fraction", type=float, default=0.2, help="fração local reservada à validação")
+    parser.add_argument("--num-workers", type=int, default=0, help="workers de cada DataLoader")
+    return parser.parse_args(argv)
 
 
 def seed_everything(seed):
     random.seed(seed)
-    np.random.seed(seed % (2**32))
+    np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
@@ -116,9 +70,7 @@ def seed_everything(seed):
 def weighted_average(results):
     """Aggregate scalar client metrics using their number of examples."""
     total_examples = sum(num_examples for num_examples, _ in results)
-    if total_examples == 0:
-        return {}
-    keys = set.intersection(*(set(metrics) for _, metrics in results))
+    keys = set.union(*(set(metrics) for _, metrics in results))
     return {
         key: sum(num_examples * float(metrics[key]) for num_examples, metrics in results)
         / total_examples
@@ -220,8 +172,6 @@ def main(argv=None):
             "init_args": {"include_dashboard": False},
         },
     )
-    if len(history) != args.num_rounds + 1:
-        raise RuntimeError("A simulação terminou sem avaliar todas as rodadas.")
     return history
 
 

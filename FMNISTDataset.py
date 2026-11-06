@@ -61,10 +61,6 @@ class FMNISTDataset:
         augment: bool = True,
         dataset_name: str = "fashion-mnist",
     ) -> None:
-        if not 0 < validation_fraction < 1:
-            raise ValueError("validation_fraction must be between 0 and 1.")
-        if len(partition) < 2:
-            raise ValueError("Each client partition needs at least two examples.")
         self._configure(batch_size, seed, num_workers, shuffle, augment, dataset_name)
         partition = self._prepare_partition(partition)
         splits = partition.train_test_split(
@@ -82,23 +78,16 @@ class FMNISTDataset:
         augment: bool,
         dataset_name: str,
     ) -> None:
-        if batch_size < 1:
-            raise ValueError("batch_size must be positive.")
-        if num_workers < 0:
-            raise ValueError("num_workers must not be negative.")
-        if dataset_name not in ("fashion-mnist", "cifar10"):
-            raise ValueError("dataset_name must be 'fashion-mnist' or 'cifar10'.")
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.shuffle = shuffle
         self.seed = seed
         self.dataset_name = dataset_name
-        if dataset_name == "cifar10":
-            self.eval_transforms = CIFAR_EVAL_TRANSFORMS
-            self.train_transforms = CIFAR_TRAIN_TRANSFORMS if augment else CIFAR_EVAL_TRANSFORMS
-        else:
-            self.eval_transforms = EVAL_TRANSFORMS
-            self.train_transforms = TRAIN_TRANSFORMS if augment else EVAL_TRANSFORMS
+        train_transforms, self.eval_transforms = {
+            "fashion-mnist": (TRAIN_TRANSFORMS, EVAL_TRANSFORMS),
+            "cifar10": (CIFAR_TRAIN_TRANSFORMS, CIFAR_EVAL_TRANSFORMS),
+        }[dataset_name]
+        self.train_transforms = train_transforms if augment else self.eval_transforms
         self._train_generator = torch.Generator().manual_seed(seed)
         self._eval_generator = torch.Generator().manual_seed(seed)
 
@@ -118,8 +107,6 @@ class FMNISTDataset:
         dataset_name: str = "fashion-mnist",
     ) -> "FMNISTDataset":
         """Use the complete official test split for centralized evaluation."""
-        if len(partition) == 0:
-            raise ValueError("The test partition must not be empty.")
         instance = cls.__new__(cls)
         instance._configure(batch_size, seed, num_workers, False, False, dataset_name)
         instance.train_partition = None
@@ -146,8 +133,6 @@ class FMNISTDataset:
         return batch
 
     def train(self) -> Dataset:
-        if self.train_partition is None:
-            raise ValueError("This dataset was created only for evaluation.")
         return self.train_partition.with_transform(self.apply_train_transforms)
 
     def validation(self) -> Dataset:
