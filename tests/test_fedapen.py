@@ -1,12 +1,17 @@
 """FedAPEN regression tests with native Flower state and offline datasets."""
 
 import unittest
+from contextlib import redirect_stdout
+import io
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import numpy as np
 import torch
 from datasets import Dataset, DatasetDict, Features, Image as ImageFeature, Value
 from flwr.common import Code, EvaluateRes, FitRes, RecordDict, Status, ndarrays_to_parameters, parameters_to_ndarrays
+from flwr.server import History, Server
 from flwr_datasets import FederatedDataset
 from flwr_datasets.partitioner import DirichletPartitioner
 from PIL import Image
@@ -18,7 +23,7 @@ from FedAPEN import FedAPEN
 from FedAPENDataset import FedAPENDataset, create_federated_dataset
 from FedAPENExperiment import FedAPENExperiment, get_params
 from Model import CIFARCNN, FashionMNISTCNN, create_model
-from run import create_apps, parse_args
+from run import PlottingServer, create_apps, parse_args
 
 
 class LocalDataset:
@@ -176,6 +181,26 @@ class AggregationTests(unittest.TestCase):
 
 
 class DatasetAndModelTests(unittest.TestCase):
+    def test_server_exports_charts_after_training_and_returns_original_history(self):
+        history = History()
+        history.add_metrics_distributed_fit(1, {"loss": 0.8})
+        history.add_metrics_distributed(1, {"accuracy": 0.75})
+        history.add_loss_distributed(1, 0.4)
+        output = io.StringIO()
+        with TemporaryDirectory() as directory:
+            server = PlottingServer(FedAvg(), Path(directory))
+            with patch.object(Server, "fit", return_value=(history, 1.25)) as fit:
+                with redirect_stdout(output):
+                    result, elapsed = server.fit(num_rounds=1, timeout=None)
+            fit.assert_called_once_with(num_rounds=1, timeout=None)
+            self.assertIs(result, history)
+            self.assertEqual(elapsed, 1.25)
+            self.assertEqual(
+                {path.name for path in Path(directory).glob("*.png")},
+                {"treino_loss.png", "avaliacao_accuracy.png", "avaliacao_loss.png"},
+            )
+            self.assertIn(str(Path(directory).resolve()), output.getvalue())
+
     def test_official_splits_are_merged_only_for_fedapen(self):
         raw = DatasetDict({
             "train": Dataset.from_dict({"label": [index % 10 for index in range(100)], "id": list(range(100))}),
@@ -208,11 +233,12 @@ class DatasetAndModelTests(unittest.TestCase):
             ])
             _, server_app = create_apps(args, LocalPartitions())
             components = server_app._server_fn(None)
-            self.assertIsNone(components.strategy.evaluate_fn)
+            strategy = components.server.strategy
+            self.assertIsNone(strategy.evaluate_fn)
             self.assertEqual(components.config.num_rounds, 7)
-            self.assertEqual(components.strategy.fraction_evaluate, 0.5)
-            self.assertEqual(components.strategy.min_fit_clients, 2)
-            config = components.strategy.on_fit_config_fn(2)
+            self.assertEqual(strategy.fraction_evaluate, 0.5)
+            self.assertEqual(strategy.min_fit_clients, 2)
+            config = strategy.on_fit_config_fn(2)
             self.assertEqual(config["epochs"], 3)
             self.assertEqual(config["momentum"], 0.2)
             self.assertAlmostEqual(config["learning_rate"], 0.016)

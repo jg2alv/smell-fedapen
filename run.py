@@ -1,14 +1,16 @@
 """Run local Flower/PyTorch experiments with Fashion-MNIST or CIFAR-10."""
 
 import argparse
+from datetime import datetime
 import logging
+from pathlib import Path
 import random
 
 import numpy as np
 import torch
 from flwr.client import ClientApp
 from flwr.common import Context, ndarrays_to_parameters
-from flwr.server import ServerApp, ServerAppComponents, ServerConfig
+from flwr.server import Server, ServerApp, ServerAppComponents, ServerConfig, SimpleClientManager
 from flwr.server.strategy import FedAvg, FedProx
 from flwr.simulation import run_simulation
 from flwr_datasets import FederatedDataset
@@ -20,6 +22,7 @@ from FedAPEN import FedAPEN
 from FedAPENDataset import FedAPENDataset, create_federated_dataset
 from FedAPENExperiment import FedAPENExperiment
 from Model import create_model
+from plots import plot_history
 
 # PARA IGNORAR OS WARNINGS DE FEATURE UPDATED E DEPRECATION DO FLWR
 class IgnoreWarnings(logging.Filter):
@@ -39,6 +42,18 @@ if torch.cuda.is_available():
 else:
     DEVICE = torch.device("cpu")
     GPUS_PER_CLIENT = 0.0
+
+
+class PlottingServer(Server):
+    def __init__(self, strategy, plot_directory):
+        super().__init__(client_manager=SimpleClientManager(), strategy=strategy)
+        self.plot_directory = Path(plot_directory)
+
+    def fit(self, num_rounds, timeout):
+        history, elapsed = super().fit(num_rounds=num_rounds, timeout=timeout)
+        paths = plot_history(history, self.plot_directory)
+        print(f"{len(paths)} gráficos salvos em {self.plot_directory.resolve()}")
+        return history, elapsed
 
 
 def parse_args(argv=None):
@@ -186,8 +201,12 @@ def create_apps(args, federated_dataset=None):
                 strategy = FedProx(proximal_mu=args.mu, **strategy_kwargs)
             else:
                 strategy = FedAvg(**strategy_kwargs)
+        plot_directory = Path("graficos") / (
+            f"{args.dataset}_{args.strategy}_{datetime.now():%Y%m%d_%H%M%S_%f}"
+        )
         return ServerAppComponents(
-            strategy=strategy, config=ServerConfig(num_rounds=args.num_rounds),
+            server=PlottingServer(strategy, plot_directory),
+            config=ServerConfig(num_rounds=args.num_rounds),
         )
 
     return ClientApp(client_fn=client_fn), ServerApp(server_fn=server_fn)
