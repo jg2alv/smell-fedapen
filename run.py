@@ -201,7 +201,7 @@ def create_apps(args, federated_dataset=None):
                 strategy = FedProx(proximal_mu=args.mu, **strategy_kwargs)
             else:
                 strategy = FedAvg(**strategy_kwargs)
-        plot_directory = Path("graficos") / (
+        plot_directory = Path("../output/graficos") / (
             f"{args.dataset}_{args.strategy}_{datetime.now():%Y%m%d_%H%M%S_%f}"
         )
         return ServerAppComponents(
