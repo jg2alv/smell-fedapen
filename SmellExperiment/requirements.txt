@@ -1,0 +1,10 @@
+flwr[simulation]
+flwr-datasets
+datasets
+numpy
+torch
+torchvision
+torchmetrics
+scikit-learn
+Pillow
+matplotlib
